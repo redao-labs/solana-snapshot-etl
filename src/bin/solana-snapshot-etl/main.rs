@@ -21,6 +21,7 @@ mod geyser_plugin;
 mod mpl_metadata;
 mod programs;
 mod sqlite;
+mod sqlite_pid;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -44,6 +45,12 @@ struct Args {
     geyser: Option<String>,
     #[clap(long, help = "Write programs tar stream")]
     programs_out: Option<String>,
+    #[clap(long, help = "Dump raw accounts for a given program ID to SQLite DB")]
+    sqlite_program_out: Option<String>,
+    #[clap(long, requires = "sqlite_program_out", help = "Program ID to filter for")]
+    program_id: Option<String>,
+
+
 }
 
 fn main() {
@@ -59,6 +66,32 @@ fn main() {
 fn _main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut loader = SupportedLoader::new(&args.source, Box::new(LoadProgressTracking {}))?;
+    if let Some(path) = &args.sqlite_program_out {
+        let program_id_str = args.program_id.as_ref().ok_or("Missing --program-id")?;
+    
+        let program_id_bytes = bs58::decode(program_id_str)
+            .into_vec()
+            .map_err(|e| format!("Invalid base58 pubkey: {}", e))?;
+    
+        if program_id_bytes.len() != 32 {
+            return Err("Expected 32-byte program ID".into());
+        }
+    
+        let program_id: [u8; 32] = program_id_bytes.try_into().unwrap();
+        let db_path = PathBuf::from(path);
+        if db_path.exists() {
+            return Err("Refusing to overwrite existing DB at path".into());
+        }
+    
+        info!(
+            "Dumping accounts with program ID {} to SQLite DB {}",
+            program_id_str, path
+        );
+    
+        let mut dumper = sqlite_pid::RawProgramAccountDumper::new(db_path, program_id)?;
+        let count = dumper.insert_all(loader.iter())?;
+        info!("Dumped {} accounts", count);
+    }
     if args.csv {
         info!("Dumping to CSV");
         let mut writer = CsvDumper::new();
